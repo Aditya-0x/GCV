@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GC Visualizer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+
+<div class="mesh-bg">
+  <div class="overlay"></div>
+  <div class="mesh-blob blob-1"></div>
+  <div class="mesh-blob blob-2"></div>
+  <div class="mesh-blob blob-3"></div>
+</div>
+
+<!-- ── Connection error overlay ── -->
+<div id="error-overlay">
+  <div class="error-box">
+    <h2>Backend not running</h2>
+    <p>Start the C backend first, then reload this page.</p>
+    <pre>cd backend
+gcc -o gc_server gc_server.c
+./gc_server</pre>
+    <button class="btn primary" style="margin-top:1rem;width:100%"
+            onclick="location.reload()">Retry</button>
+  </div>
+</div>
+
+<div class="app">
+
+  <!-- ── Header ── -->
+  <header class="app-header">
+    <div class="header-top">
+      <div>
+        <h1>Garbage Collection Visualizer</h1>
+        <p>Visual demos of three GC strategies — powered by a C backend</p>
+        <div class="server-status" id="status-badge">
+          <span class="dot"></span>
+          <span id="status-text">Connecting to backend…</span>
+        </div>
+      </div>
+      <div class="os-monitor">
+        <div class="os-stat">
+          <span class="os-stat-lbl">Process RAM</span>
+          <span class="os-stat-val" id="os-ram">-- MB</span>
+        </div>
+        <div class="os-stat">
+          <span class="os-stat-lbl">Page Faults</span>
+          <span class="os-stat-val" id="os-faults">--</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── Main card ── -->
+  <div class="card">
+    <div class="tabs">
+      <button class="tab-btn active" onclick="switchTab('rc',this)">Reference Counting</button>
+      <button class="tab-btn" onclick="switchTab('ms',this)">Mark &amp; Sweep</button>
+      <button class="tab-btn" onclick="switchTab('gen',this)">Generational</button>
+      <button class="tab-btn" onclick="switchTab('perf',this)">Performance</button>
+    </div>
+
+    <!-- ════════ REFERENCE COUNTING ════════ -->
+    <div id="panel-rc" class="panel active">
+      <div class="info-bar">
+        <strong>Reference Counting</strong> — each object tracks how many pointers
+        point at it. When the count reaches <strong>0</strong> it is freed immediately.
+        Cycles keep the count above 0 forever — a permanent memory leak.
+      </div>
+
+      <div class="stat-row">
+        <div class="stat"><div class="stat-val" id="rc-live">—</div><div class="stat-lbl">Live</div></div>
+        <div class="stat"><div class="stat-val" id="rc-freed">—</div><div class="stat-lbl">Freed</div></div>
+        <div class="stat"><div class="stat-val" id="rc-leaked">—</div><div class="stat-lbl">Leaked</div></div>
+      </div>
+
+      <div class="canvas-wrap"><canvas id="rc-canvas" height="260"></canvas></div>
+
+      <div class="legend">
+        <div class="legend-item"><div class="legend-dot" style="background:var(--blue)"></div>Live object</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--red)"></div>Cycle / leaked</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--bg3)"></div>Freed slot</div>
+      </div>
+
+      <div class="controls">
+        <button class="btn primary" onclick="api('POST','/rc/alloc')">+ Allocate</button>
+        <button class="btn success" onclick="api('POST','/rc/addref')">+ Add reference</button>
+        <button class="btn danger"  onclick="api('POST','/rc/dropref')">− Drop reference</button>
+        <button class="btn warning" onclick="api('POST','/rc/cycle')">Create cycle</button>
+        <button class="btn"         onclick="api('POST','/rc/reset')">Reset</button>
+      </div>
+
+      <div class="log" id="rc-log"></div>
+    </div>
+
+    <!-- ════════ MARK & SWEEP ════════ -->
+    <div id="panel-ms" class="panel">
+      <div class="info-bar">
+        <strong>Mark &amp; Sweep</strong> — starting from <strong>roots</strong>,
+        every reachable object is marked BLACK. Then the heap is swept: anything
+        still WHITE is unreachable and freed. Cycles are collected correctly.
+        Click <em>GC Step</em> repeatedly to animate the algorithm one node at a time.
+      </div>
+
+      <div class="phase-row">
+        <span class="phase-pill" id="ms-ph-idle">Idle</span>
+        <span class="phase-pill" id="ms-ph-marking">Marking</span>
+        <span class="phase-pill" id="ms-ph-sweeping">Sweeping</span>
+      </div>
+
+      <div class="canvas-wrap"><canvas id="ms-canvas" height="300"></canvas></div>
+
+      <div class="legend">
+        <div class="legend-item"><div class="legend-dot" style="background:var(--blue)"></div>Root</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--txt2)"></div>Unvisited (white)</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--amber)"></div>Discovered (gray)</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--green)"></div>Reachable (black)</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--red)"></div>Freed</div>
+      </div>
+
+      <div class="controls">
+        <button class="btn primary" onclick="msStep()" id="ms-step-btn">GC Step ▶</button>
+        <button class="btn"         onclick="api('POST','/ms/alloc')">+ Allocate</button>
+        <button class="btn"         onclick="api('POST','/ms/connect')">+ Connect</button>
+        <button class="btn danger"  onclick="api('POST','/ms/disconnect')">Disconnect</button>
+        <button class="btn"         onclick="api('POST','/ms/reset')">Reset</button>
+      </div>
+
+      <div class="log" id="ms-log"></div>
+    </div>
+
+    <!-- ════════ GENERATIONAL ════════ -->
+    <div id="panel-gen" class="panel">
+      <div class="info-bar">
+        <strong>Generational Collection</strong> — new objects enter the
+        <strong>young gen</strong> (nursery). Most die quickly; those surviving
+        <strong>3 minor GCs</strong> are promoted to <strong>old gen</strong>.
+        Minor GC is cheap; major GC collects both generations.
+      </div>
+
+      <div class="stat-row">
+        <div class="stat"><div class="stat-val" id="gen-young-stat">—</div><div class="stat-lbl">Young gen</div></div>
+        <div class="stat"><div class="stat-val" id="gen-old-stat">—</div><div class="stat-lbl">Old gen</div></div>
+        <div class="stat"><div class="stat-val" id="gen-major-stat">—</div><div class="stat-lbl">Major GCs</div></div>
+      </div>
+
+      <!-- chip-based generation view -->
+      <div class="gen-zones">
+        <div class="gen-zone">
+          <div class="gen-zone-label young">Young Generation (nursery)</div>
+          <div class="gen-objects" id="gen-young-chips"></div>
+        </div>
+        <div class="gen-zone">
+          <div class="gen-zone-label old">Old Generation (tenured)</div>
+          <div class="gen-objects" id="gen-old-chips"></div>
+        </div>
+      </div>
+
+      <div class="legend">
+        <div class="legend-item"><div class="legend-dot" style="background:var(--amber)"></div>Young age 0</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--teal)"></div>Young age 1–2</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--blue)"></div>Old gen</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--green)"></div>Just promoted</div>
+      </div>
+
+      <div class="controls">
+        <button class="btn primary" onclick="api('POST','/gen/alloc')">+ Allocate 3</button>
+        <button class="btn"         onclick="api('POST','/gen/minor')">Minor GC</button>
+        <button class="btn danger"  onclick="api('POST','/gen/major')">Major GC</button>
+        <button class="btn"         onclick="api('POST','/gen/reset')">Reset</button>
+      </div>
+
+      <div class="log" id="gen-log"></div>
+    </div>
+
+    <!-- ════════ PERFORMANCE ════════ -->
+    <div id="panel-perf" class="panel">
+      <div class="info-bar">
+        Adjust the workload sliders to see how each strategy's
+        <strong>latency</strong>, <strong>throughput</strong>, and
+        <strong>memory usage</strong> respond.
+      </div>
+
+      <div class="slider-row">
+        <span>Allocation rate</span>
+        <input type="range" id="sl-rate" min="1" max="10" value="5"
+               oninput="updatePerf()" step="1">
+        <span class="slider-val" id="sv-rate">5</span>
+      </div>
+      <div class="slider-row">
+        <span>Object lifetime</span>
+        <input type="range" id="sl-life" min="1" max="10" value="4"
+               oninput="updatePerf()" step="1">
+        <span class="slider-val" id="sv-life">4</span>
+      </div>
+
+      <div class="perf-grid" id="perf-grid"></div>
+
+      <div class="section-lbl">When to use each strategy</div>
+      <div class="when-grid">
+        <div class="when-card">
+          <strong>Reference Counting</strong>
+          Swift ARC, C++ shared_ptr, Python CPython. Immediate reclaim,
+          zero pause. Fails on cycles unless augmented with a cycle detector.
+        </div>
+        <div class="when-card">
+          <strong>Mark &amp; Sweep</strong>
+          Ruby MRI, OCaml, early JVMs. Handles cycles. Stop-the-world
+          pause during collection proportional to live set size.
+        </div>
+        <div class="when-card">
+          <strong>Generational</strong>
+          JVM G1/ZGC, .NET CLR, V8, Go. Best throughput for typical
+          workloads. Minor GC stays fast; major GC is rare.
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /card -->
+</div><!-- /app -->
+
+<script>
+/* ═══════════════════════════════════════════════════════════
+   CONFIG
+   ═══════════════════════════════════════════════════════════ */
+const API = 'http://localhost:8080';
+
+/* ═══════════════════════════════════════════════════════════
+   API
+   ═══════════════════════════════════════════════════════════ */
+async function api(method, path) {
+  try {
+    const res = await fetch(API + path, { method });
+    if (!res.ok) throw new Error(res.status);
+    const data = await res.json();
+    dispatch(path, data);
+  } catch (e) {
+    console.error('API error:', e);
+  }
+}
+
+let lastRam = null;
+let lastFaults = null;
+
+function flashVal(el, cls) {
+  el.classList.add(cls);
+  setTimeout(() => el.classList.remove(cls), 400);
+}
+
+function dispatch(path, data) {
+  if (data.os) {
+    const ramEl = document.getElementById('os-ram');
+    const fltEl = document.getElementById('os-faults');
+    
+    // Animate RAM if changed
+    if (lastRam !== null) {
+      if (data.os.rss_mb > lastRam) flashVal(ramEl, 'flash-up');
+      else if (data.os.rss_mb < lastRam) flashVal(ramEl, 'flash-dn');
+    }
+    
+    // Animate Faults if changed
+    if (lastFaults !== null && data.os.faults > lastFaults) {
+      flashVal(fltEl, 'flash-up');
+    }
+    
+    ramEl.textContent = data.os.rss_mb + ' MB';
+    fltEl.textContent = data.os.faults;
+    
+    lastRam = data.os.rss_mb;
+    lastFaults = data.os.faults;
+  }
+
+  if (path.startsWith('/rc') || path.startsWith('/state/rc')) renderRC(data);
+  if (path.startsWith('/ms') || path.startsWith('/state/ms')) renderMS(data);
+  if (path.startsWith('/gen')|| path.startsWith('/state/gen'))renderGen(data);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   SERVER STATUS
+   ═══════════════════════════════════════════════════════════ */
+async function checkServer() {
+  const badge = document.getElementById('status-badge');
+  const txt   = document.getElementById('status-text');
+  try {
+    await fetch(API + '/health');
+    badge.className = 'server-status connected';
+    txt.textContent = 'Backend connected (localhost:8080)';
+  } catch {
+    badge.className = 'server-status error';
+    txt.textContent = 'Backend not reachable';
+    document.getElementById('error-overlay').classList.add('visible');
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   CANVAS HELPERS
+   ═══════════════════════════════════════════════════════════ */
+function getCtx(id, h) {
+  const c = document.getElementById(id);
+  const dpr = window.devicePixelRatio || 1;
+  const w = c.parentElement.clientWidth;
+  if (c.width !== w * dpr) {
+    c.width  = w * dpr;
+    c.height = h * dpr;
+    c.style.width  = w + 'px';
+    c.style.height = h + 'px';
+  }
+  const ctx = c.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, w, h };
+}
+
+const cs = () => getComputedStyle(document.documentElement);
+const v  = name => cs().getPropertyValue(name).trim();
+
+function drawNode(ctx, x, y, r, label, fill, sub) {
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fillStyle = fill; ctx.fill();
+  ctx.strokeStyle = v('--border2'); ctx.lineWidth = 1.2; ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.font = `500 11px ${v('--font')}`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(label, x, y - (sub ? 4 : 0));
+  if (sub) {
+    ctx.font = `10px ${v('--font')}`;
+    ctx.fillStyle = 'rgba(255,255,255,0.75)';
+    ctx.fillText(sub, x, y + 7);
+  }
+}
+
+function drawArrow(ctx, x1, y1, x2, y2, col, r) {
+  const dx = x2-x1, dy = y2-y1, len = Math.sqrt(dx*dx+dy*dy);
+  if (len < 1) return;
+  const ux = dx/len, uy = dy/len;
+  const sx = x1+ux*r, sy = y1+uy*r, ex = x2-ux*(r+5), ey = y2-uy*(r+5);
+  ctx.beginPath(); ctx.moveTo(sx,sy); ctx.lineTo(ex,ey);
+  ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.stroke();
+  const a = Math.atan2(ey-sy, ex-sx);
+  ctx.beginPath();
+  ctx.moveTo(ex, ey);
+  ctx.lineTo(ex - 8*Math.cos(a-.4), ey - 8*Math.sin(a-.4));
+  ctx.lineTo(ex - 8*Math.cos(a+.4), ey - 8*Math.sin(a+.4));
+  ctx.closePath(); ctx.fillStyle = col; ctx.fill();
+}
+
+/* ═══════════════════════════════════════════════════════════
+   REFERENCE COUNTING RENDER
+   ═══════════════════════════════════════════════════════════ */
+let rcState = null;
+
+function renderRC(data) {
+  rcState = data;
+  const live   = data.objects.filter(o => o.alive).length;
+  document.getElementById('rc-live').textContent   = live;
+  document.getElementById('rc-freed').textContent  = data.freed;
+  document.getElementById('rc-leaked').textContent = data.leaked;
+
+  const { ctx, w, h } = getCtx('rc-canvas', 260);
+  ctx.clearRect(0, 0, w, h);
+
+  const objs = data.objects;
+  const cols = Math.max(1, Math.floor((w - 40) / 88));
+  const R = 22;
+
+  /* assign positions */
+  const pos = objs.map((o, i) => ({
+    ...o,
+    x: 44 + (i % cols) * 88,
+    y: 44 + Math.floor(i / cols) * 88
+  }));
+
+  /* draw edges */
+  data.refs.forEach(ref => {
+    const a = pos.find(p => p.id === ref.from);
+    const b = pos.find(p => p.id === ref.to);
+    if (a && b && a.alive && b.alive)
+      drawArrow(ctx, a.x, a.y, b.x, b.y, v('--txt2'), R);
+  });
+
+  /* draw nodes */
+  pos.forEach(o => {
+    if (!o.alive) {
+      ctx.beginPath(); ctx.arc(o.x, o.y, R, 0, Math.PI*2);
+      ctx.fillStyle = v('--bg3'); ctx.fill();
+      ctx.strokeStyle = v('--border'); ctx.lineWidth=1; ctx.stroke();
+      ctx.fillStyle = v('--txt2');
+      ctx.font = `10px ${v('--font')}`;
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText('freed', o.x, o.y);
+      return;
+    }
+    const fill = o.cycle ? v('--red') : v('--blue');
+    drawNode(ctx, o.x, o.y, R, o.name, fill, `rc=${o.rc}`);
+  });
+
+  renderLog('rc-log', data.log, tagRC);
+}
+
+function tagRC(msg) {
+  if (msg.includes('[ALLOC]'))   return 'alloc';
+  if (msg.includes('[FREE]'))    return 'free';
+  if (msg.includes('[RETAIN]'))  return 'retain';
+  if (msg.includes('[DROP]') || msg.includes('[RELEASE]')) return 'drop';
+  if (msg.includes('[CYCLE]'))   return 'cycle';
+  if (msg.includes('[WARN]'))    return 'warn';
+  return '';
+}
+
+/* ═══════════════════════════════════════════════════════════
+   MARK & SWEEP RENDER
+   ═══════════════════════════════════════════════════════════ */
+let msState = null;
+
+async function msStep() {
+  const res = await fetch(API + '/ms/gc/step', { method: 'POST' });
+  const data = await res.json();
+  renderMS(data);
+}
+
+const MS_COLORS = {
+  white: () => v('--txt2'),
+  gray:  () => v('--amber'),
+  black: () => v('--green'),
+};
+
+function renderMS(data) {
+  msState = data;
+
+  /* phase pills */
+  ['idle','marking','sweeping'].forEach(ph => {
+    const el = document.getElementById('ms-ph-' + ph);
+    el.classList.toggle('active', data.phase === ph);
+  });
+
+  /* step button label */
+  const stepBtn = document.getElementById('ms-step-btn');
+  stepBtn.textContent = data.phase === 'idle' ? 'GC Step ▶ (start)' : 'GC Step ▶';
+
+  const nodes = data.nodes;
+  const { ctx, w, h } = getCtx('ms-canvas', 300);
+  ctx.clearRect(0, 0, w, h);
+
+  const cols = 5, R = 22;
+  const gw = (w - 80) / cols;
+
+  const pos = nodes.map((n, i) => ({
+    ...n,
+    x: 40 + (i % cols) * gw + gw/2,
+    y: 60 + Math.floor(i / cols) * 110,
+  }));
+
+  /* edges */
+  nodes.forEach((n, i) => {
+    if (!n.alive) return;
+    n.edges.forEach(eid => {
+      const t = pos.find(p => p.id === eid);
+      if (t && t.alive) drawArrow(ctx, pos[i].x, pos[i].y, t.x, t.y, v('--txt2'), R);
+    });
+  });
+
+  /* nodes */
+  pos.forEach(n => {
+    if (!n.alive) {
+      ctx.beginPath(); ctx.arc(n.x, n.y, R, 0, Math.PI*2);
+      ctx.fillStyle = v('--bg3'); ctx.fill();
+      ctx.strokeStyle = v('--border'); ctx.lineWidth=1; ctx.stroke();
+      ctx.fillStyle = v('--txt2');
+      ctx.font = `10px ${v('--font')}`;
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText('freed', n.x, n.y);
+      return;
+    }
+    const fill = n.is_root ? v('--blue') : (MS_COLORS[n.color] ? MS_COLORS[n.color]() : v('--txt2'));
+    const sz = n.is_root ? R + 3 : R;
+    drawNode(ctx, n.x, n.y, sz, n.name, fill);
+  });
+
+  renderLog('ms-log', data.log, tagMS);
+}
+
+function tagMS(msg) {
+  if (msg.includes('[ALLOC]'))  return 'alloc';
+  if (msg.includes('[MARK]'))   return 'mark';
+  if (msg.includes('[SWEEP]'))  return 'sweep';
+  if (msg.includes('[WARN]'))   return 'warn';
+  if (msg.includes('==='))      return 'phase';
+  return '';
+}
+
+/* ═══════════════════════════════════════════════════════════
+   GENERATIONAL RENDER
+   ═══════════════════════════════════════════════════════════ */
+function renderGen(data) {
+  document.getElementById('gen-young-stat').textContent = data.young.length;
+  document.getElementById('gen-old-stat').textContent   = data.old.length;
+  document.getElementById('gen-major-stat').textContent = data.major_count;
+
+  /* young chips */
+  const yc = document.getElementById('gen-young-chips');
+  yc.innerHTML = '';
+  data.young.forEach(o => {
+    const chip = document.createElement('div');
+    const ageCls = o.age === 0 ? 'young-0' : o.age === 1 ? 'young-1' : 'young-2';
+    chip.className = `obj-chip ${ageCls}`;
+    chip.innerHTML = `<span>${o.name}</span><span>a=${o.age}</span>`;
+    yc.appendChild(chip);
+  });
+  if (data.young.length === 0) {
+    yc.innerHTML = '<span style="font-size:12px;color:var(--txt2)">empty</span>';
+  }
+
+  /* old chips */
+  const oc = document.getElementById('gen-old-chips');
+  oc.innerHTML = '';
+  data.old.forEach(o => {
+    const chip = document.createElement('div');
+    chip.className = `obj-chip ${o.just_promoted ? 'promoted' : 'old'}`;
+    chip.innerHTML = `<span>${o.name}</span><span>a=${o.age}</span>`;
+    oc.appendChild(chip);
+  });
+  if (data.old.length === 0) {
+    oc.innerHTML = '<span style="font-size:12px;color:var(--txt2)">empty</span>';
+  }
+
+  renderLog('gen-log', data.log, tagGen);
+}
+
+function tagGen(msg) {
+  if (msg.includes('[NEW]'))     return 'alloc';
+  if (msg.includes('[FREE]'))    return 'free';
+  if (msg.includes('[PROMOTE]')) return 'promote';
+  if (msg.includes('[SURVIVE]')) return 'retain';
+  if (msg.includes('[WARN]'))    return 'warn';
+  if (msg.includes('---') || msg.includes('===')) return 'phase';
+  return '';
+}
+
+/* ═══════════════════════════════════════════════════════════
+   LOG RENDERER
+   ═══════════════════════════════════════════════════════════ */
+function renderLog(id, entries, tagger) {
+  const el = document.getElementById(id);
+  el.innerHTML = entries.map(msg => {
+    const cls = tagger(msg);
+    return `<div class="log-line ${cls}">${escHtml(msg)}</div>`;
+  }).join('');
+  el.scrollTop = el.scrollHeight;
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+/* ═══════════════════════════════════════════════════════════
+   PERFORMANCE TAB
+   ═══════════════════════════════════════════════════════════ */
+function updatePerf() {
+  const rate = +document.getElementById('sl-rate').value;
+  const life = +document.getElementById('sl-life').value;
+  document.getElementById('sv-rate').textContent = rate;
+  document.getElementById('sv-life').textContent = life;
+
+  /* Simulate scores based on workload parameters */
+  const rc  = { lat: Math.min(95, 8+rate*3+(life>6?28:0)),   tput: Math.max(8, 88-rate*5-(life>6?28:0)),  mem: Math.min(95, 20+rate*4+life*5) };
+  const ms  = { lat: Math.min(98, 42+rate*5),                 tput: Math.max(15,72-rate*3),                 mem: Math.min(85, 18+life*7) };
+  const gen = { lat: Math.min(78, 12+rate*2),                 tput: Math.max(42,92-rate*2),                 mem: Math.min(80, 22+life*4) };
+
+  const cards = [
+    { label:'Ref Counting — Latency',    val:rc.lat,  color:'--amber', note:'Immediate free, but dealloc chains can cascade' },
+    { label:'Ref Counting — Throughput', val:rc.tput, color:'--green', note:'Per-operation overhead on every pointer write' },
+    { label:'Ref Counting — Memory',     val:rc.mem,  color:'--blue',  note:'Leaks on cycles; immediate elsewhere' },
+    { label:'Mark & Sweep — Latency',    val:ms.lat,  color:'--red',   note:'Stop-the-world pause proportional to heap size' },
+    { label:'Mark & Sweep — Throughput', val:ms.tput, color:'--green', note:'No per-op cost; batch collection is efficient' },
+    { label:'Mark & Sweep — Memory',     val:ms.mem,  color:'--blue',  note:'Accumulates between GC cycles' },
+    { label:'Generational — Latency',    val:gen.lat, color:'--green', note:'Minor GC is very fast; major GC rare' },
+    { label:'Generational — Throughput', val:gen.tput,color:'--green', note:'Best overall; infant-mortality hypothesis pays off' },
+    { label:'Generational — Memory',     val:gen.mem, color:'--blue',  note:'Small write-barrier + card-table overhead' },
+  ];
+
+  document.getElementById('perf-grid').innerHTML = cards.map(c => `
+    <div class="perf-card">
+      <div class="perf-card-name">${c.label}</div>
+      <div class="perf-track">
+        <div class="perf-fill" style="width:${c.val}%;background:var(${c.color})"></div>
+      </div>
+      <div class="perf-val">${c.val}%</div>
+      <div class="perf-note">${c.note}</div>
+    </div>`).join('');
+}
+
+/* ═══════════════════════════════════════════════════════════
+   TAB SWITCHING
+   ═══════════════════════════════════════════════════════════ */
+function switchTab(t, el) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('panel-' + t).classList.add('active');
+  /* refresh canvas after layout change */
+  if (t === 'rc' && rcState) renderRC(rcState);
+  if (t === 'ms' && msState) renderMS(msState);
+  if (t === 'perf') updatePerf();
+}
+
+/* ═══════════════════════════════════════════════════════════
+   INIT
+   ═══════════════════════════════════════════════════════════ */
+window.addEventListener('load', async () => {
+  await checkServer();
+  /* load initial state for all three engines */
+  const [rc, ms, gen] = await Promise.all([
+    fetch(API + '/state/rc').then(r => r.json()).catch(() => null),
+    fetch(API + '/state/ms').then(r => r.json()).catch(() => null),
+    fetch(API + '/state/gen').then(r => r.json()).catch(() => null),
+  ]);
+  if (rc)  renderRC(rc);
+  if (ms)  renderMS(ms);
+  if (gen) renderGen(gen);
+  updatePerf();
+  window.addEventListener('resize', () => {
+    if (rcState) renderRC(rcState);
+    if (msState) renderMS(msState);
+  });
+});
+</script>
+</body>
+</html>
