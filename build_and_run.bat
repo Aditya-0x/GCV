@@ -7,5 +7,6 @@ if %ERRORLEVEL% neq 0 (
     exit /b %ERRORLEVEL%
 )
 echo Build succeeded!
-echo Starting backend server...
+echo Starting backend server and opening UI...
+start "" "index.html"
 gc_server.exe

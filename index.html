@@ -23,9 +23,8 @@
   <div class="error-box">
     <h2>Backend not running</h2>
     <p>Start the C backend first, then reload this page.</p>
-    <pre>cd backend
-gcc -o gc_server gc_server.c
-./gc_server</pre>
+    <pre>gcc -o gc_server gc_server.c -lws2_32 -lpsapi
+./gc_server.exe</pre>
     <button class="btn primary" style="margin-top:1rem;width:100%"
             onclick="location.reload()">Retry</button>
   </div>
